@@ -1,0 +1,8 @@
+streamlit
+torch
+numpy
+pillow
+scikit-learn
+transformers
+openai
+git+https://github.com/openai/CLIP.git
