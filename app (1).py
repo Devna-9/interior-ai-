@@ -1,118 +1,110 @@
-
 import streamlit as st
-from openai import OpenAI
+import torch
+import numpy as np
 from PIL import Image
-import requests
-from io import BytesIO
+from sklearn.metrics.pairwise import cosine_similarity
 
-# -------------------------------
-# CONFIG
-# -------------------------------
-st.set_page_config(
-    page_title="AI Interior Designer",
-    layout="centered"
-)
+import clip
+from transformers import BlipProcessor, BlipForConditionalGeneration
+from openai import OpenAI
 
-client = OpenAI(api_key="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")  # <-- add your API key here
+# ---------------- CONFIG ----------------
+st.set_page_config(page_title="AI Interior Design Generator",layout="wide")
 
-# -------------------------------
-# BUDGET LOGIC (Feature Engineering Equivalent)
-# -------------------------------
-def budget_description(budget):
-    if budget == "Low":
-        return (
-            "low-cost materials, compact furniture, simple decor, "
-            "laminate flooring, minimal accessories"
-        )
-    elif budget == "Medium":
-        return (
-            "mid-range materials, modular furniture, wooden finishes, "
-            "balanced decor, premium lighting"
-        )
-    else:
-        return (
-            "luxury materials, marble flooring, custom furniture, "
-            "designer decor, premium textures"
-        )
+client = OpenAI(api_key="YOUR_OPENAI_API_KEY")
 
-# -------------------------------
-# PROMPT ENGINEERING (Core Logic)
-# -------------------------------
-def build_prompt(room, style, color, lighting, budget_desc, furniture_style, material):
-    prompt = f"""
-    Ultra-realistic {style.lower()} {room.lower()} interior design,
-    designed for a {budget_desc}.
-    Dominant {color.lower()} color palette with realistic textures.
-    {furniture_style} furniture with accurate proportions.
-    {lighting.lower()} lighting with natural shadows and reflections.
-    Global illumination, soft ambient light.
-    Dominant use of {material.lower()} textures and finishes.
-    Shot with DSLR camera, 35mm lens, shallow depth of field.
-    Photorealistic interior design photography, 8K resolution.
-    No people, no text, no watermark.
-    """
-    return prompt
+device = "cuda" if torch.cuda.is_available() else "cpu"
 
-# -------------------------------
-# DALL·E IMAGE GENERATION
-# -------------------------------
-def generate_image(prompt):
+# ---------------- LOAD MODELS ----------------
+clip_model, preprocess = clip.load("ViT-B/32", device=device)
+
+processor = BlipProcessor.from_pretrained(
+    "Salesforce/blip-image-captioning-base")
+blip_model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base").to(device)
+
+# ---------------- FUNCTIONS ----------------
+
+def generate_caption(image):
+    inputs = processor(image, return_tensors="pt").to(device)
+    with torch.no_grad():
+        out = blip_model.generate(**inputs)
+    return processor.decode(out[0], skip_special_tokens=True)
+
+
+def generate_dalle_image(prompt):
     response = client.images.generate(
-        model="dall-e-3",
+        model="gpt-image-1",
         prompt=prompt,
-        size="1024x1024",
-        quality="standard",
-        n=1,
-    )
+        size="1024x1024")
     return response.data[0].url
 
-# -------------------------------
-# Streamlit UI
-# -------------------------------
-st.title("AI Interior Designer")
-st.write("Generate unique interior designs with DALL·E 3")
 
-# Input fields
-room = st.selectbox("Select Room Type",
-                    ("Living Room", "Bedroom", "Kitchen",
-                     "Bathroom", "Office", "Dining Room"))
+def clip_similarity(image, text):
+    image_input = preprocess(image).unsqueeze(0).to(device)
+    text_input = clip.tokenize([text]).to(device)
 
-style = st.selectbox("Select Style",
-                     ("Modern", "Minimalist", "Industrial",
-                      "Bohemian", "Scandinavian", "Traditional",
-                      "Art Deco", "Rustic", "Coastal", "Mid-Century Modern"))
+    with torch.no_grad():
+        image_features = clip_model.encode_image(image_input)
+        text_features = clip_model.encode_text(text_input)
 
-color = st.selectbox("Select Dominant Color Palette",
-                     ("Neutral", "Monochromatic", "Vibrant",
-                      "Pastel", "Dark", "Earthy", "Cool", "Warm", "Metallic", "Jewel Tone", "Gradient"))
+    sim = cosine_similarity(
+        image_features.cpu().numpy(),
+        text_features.cpu().numpy())[0][0]
 
-lighting = st.selectbox("Select Lighting Style",
-                       ("Bright", "Dim", "Natural", "Accent", "Ambient", "Track Lighting", "Recessed Lighting", "Pendant Lighting", "Chandelier", "Sconce", "Task Lighting", "Uplighting", "Downlighting"))
+    return round(sim * 100, 2)
 
-furniture_style = st.selectbox("Select Furniture Style",
-                               ("Modern", "Classic", "Rustic", "Minimalist", "Industrial", "Bohemian", "Vintage", "Transitional", "Shabby Chic", "French Provincial", "Art Deco", "Asian", "Contemporary", "Eclectic", "Farmhouse", "Hollywood Regency", "Mediterranean", "Mission", "Nautical", "Southwestern", "Tropical", "Victorian", "Art Nouveau", "Mid-Century Modern", "Neo-classical", "Regency", "Shaker"))
 
-material = st.selectbox("Select Dominant Material/Texture",
-                           ("Wood", "Metal", "Glass", "Concrete", "Brick", "Stone", "Leather", "Fabric", "Marble", "Ceramic", "Rattan", "Velvet", "Silk", "Linen", "Wicker", "Bamboo", "Paper", "Cork", "Felt", "Mirror", "Plastic", "Acrylic", "Chrome", "Copper", "Brass", "Gold", "Silver", "Plexiglass", "Terracotta", "Slate", "Granite"))
+# ---------------- UI ----------------
 
-budget_options = {
-    "Low": "low-cost materials, compact furniture, simple decor",
-    "Medium": "mid-range materials, modular furniture, wooden finishes",
-    "High": "luxury materials, marble flooring, custom furniture"
-}
-budget = st.select_slider(
-    "Select Budget",
-    options=list(budget_options.keys()),
-    value="Medium"
-)
+st.title("AI-Powered Interior Design Generator")
+st.caption("Multimodal AI using CLIP, BLIP, GPT & DALL·E")
 
-# Generate button
-if st.button("Generate Design"):
-    with st.spinner("Generating your interior design..."):
-        budget_desc = budget_description(budget)
-        prompt = build_prompt(room, style, color, lighting, budget_desc, furniture_style, material)
-        image_url = generate_image(prompt)
+uploaded_image = st.file_uploader("Upload a room image",type=["jpg", "png", "jpeg"])
 
-        st.image(image_url, caption="Your AI-Generated Interior Design", use_column_width=True)
-        st.success("Design Generated!")
-        st.write(f"**Prompt used:** {prompt}")
+if uploaded_image:
+    image = Image.open(uploaded_image).convert("RGB")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.subheader("Original Room Image")
+        st.image(image, use_column_width=True)
+
+    caption = generate_caption(image)
+
+    base_prompt = f"""
+    Design a modern interior for the following room:
+    {caption}
+    """
+
+    with st.spinner("Generating interior design..."):
+        dalle_url = generate_dalle_image(base_prompt)
+
+    with col2:
+        st.subheader("AI Generated Interior Design")
+        st.image(dalle_url, use_column_width=True)
+
+    st.markdown("### Room Understanding")
+    st.write(caption)
+
+    # ---------------- PROMPT REFINEMENT ----------------
+
+    st.markdown("### Modify the Design")
+    user_prompt = st.text_area("Describe the changes you want",placeholder="e.g. minimalist, warm lights, wooden furniture")
+
+    if st.button("Regenerate with My Prompt"):
+        final_prompt = base_prompt + "\nUser Preferences: " + user_prompt
+
+        with st.spinner("Regenerating design..."):
+            new_dalle_url = generate_dalle_image(final_prompt)
+
+        st.subheader("Updated Interior Design")
+        st.image(new_dalle_url, use_column_width=True)
+
+        # Accuracy Calculation
+        accuracy = clip_similarity(image, user_prompt)
+
+        st.markdown("### Prompt–Image Alignment Accuracy")
+        st.metric(label="CLIP Similarity Score",value=f"{accuracy}%")
+
+        st.info("This score represents how closely the generated image aligns ""with the user's design prompt using CLIP embeddings.")
